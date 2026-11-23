@@ -38,27 +38,6 @@ async function generateWithGemini({ prompt, model }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
-  // If the user/UI picked an Imagen model ID, try Imagen 4 predict first; otherwise use Gemini image generation
-  if (model && model.startsWith("imagen-")) {
-    const imagenModel =
-      model === "imagen-3.0-generate-002" ? "imagen-4.0-generate-001" : model;
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${imagenModel}:predict?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          instances: [{ prompt }],
-          parameters: { sampleCount: 1 },
-        }),
-      }
-    );
-    const data = await resp.json();
-    if (resp.ok && data?.predictions?.[0]?.bytesBase64Encoded) {
-      return Buffer.from(data.predictions[0].bytesBase64Encoded, "base64");
-    }
-  }
-
   const geminiModel =
     model && model.startsWith("gemini-") && model.includes("image")
       ? model
@@ -92,21 +71,48 @@ async function generateWithGemini({ prompt, model }) {
   return Buffer.from(inlineImagePart.inlineData.data, "base64");
 }
 
-async function generateServerImageBuffer({ prompt, model }) {
-  if (process.env.GEMINI_API_KEY) {
-    return await generateWithGemini({ prompt, model });
-  }
-
+async function generateWithFallback({ prompt }) {
   const encoded = encodeURIComponent(prompt);
   const seed = Math.floor(Math.random() * 1000000);
-  const fallbackResp = await fetch(
-    `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&seed=${seed}&nologo=true`
-  );
-  if (!fallbackResp.ok) {
-    throw new Error("Image generator is temporarily busy. Please try again.");
+
+  const endpoints = [
+    `https://gen.pollinations.ai/image/${encoded}?width=1024&height=1024&seed=${seed}&nologo=true`,
+    `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&seed=${seed}&nologo=true`,
+  ];
+
+  let lastError = null;
+  for (const url of endpoints) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        lastError = new Error(`Fallback generator returned HTTP ${resp.status}`);
+        continue;
+      }
+      const arrayBuffer = await resp.arrayBuffer();
+      const buf = Buffer.from(arrayBuffer);
+      if (buf.length > 0) return buf;
+    } catch (err) {
+      lastError = err;
+    }
   }
-  const arrayBuffer = await fallbackResp.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+
+  throw lastError || new Error("Image generator is temporarily busy. Please try again.");
+}
+
+async function generateServerImageBuffer({ prompt, model }) {
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      return await generateWithGemini({ prompt, model });
+    } catch (geminiErr) {
+      console.warn(
+        "Gemini image generation unavailable/quota-limited, falling back to server image generator:",
+        geminiErr.message
+      );
+      return await generateWithFallback({ prompt });
+    }
+  }
+
+  return await generateWithFallback({ prompt });
 }
 
 export const runImagePipeline = async ({
