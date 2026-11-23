@@ -20,7 +20,7 @@ import { useApi } from "./lib/useApi";
 import BeforeAfterSlider from "./components/BeforeAfterSlider";
 
 const MODES = [
-  { value: "textToImage", label: "Text to Image (Puter AI)", needsFile: false },
+  { value: "textToImage", label: "Text to Image", needsFile: false },
   { value: "aiEdit", label: "AI Prompt Edit (Puter AI)", needsFile: true },
   { value: "restore", label: "AI Restore", needsFile: true },
   { value: "removeBackground", label: "Remove Background", needsFile: true },
@@ -62,12 +62,8 @@ const STYLE_PRESETS = [
 ];
 
 const PUTER_MODELS = [
-  { id: "auto", label: "Auto (Puter Default)" },
-  { id: "black-forest-labs/flux-2-pro", label: "FLUX.2 [pro]" },
-  { id: "black-forest-labs/flux-1.1-pro", label: "FLUX 1.1 Pro" },
-  { id: "openai/gpt-image-2.6-flare", label: "GPT Image 2.6 Flare" },
-  { id: "google/gemini-3-pro-image", label: "Nano Banana Pro (Gemini 3 Pro Image)" },
-  { id: "x-ai/grok-imagine-image-2.0", label: "Grok Imagine Image 2.0" },
+  { id: "imagen-3.0-generate-002", label: "Imagen 3 (Studio Fast)" },
+  { id: "gemini-2.5-flash-image", label: "Gemini Flash Image" },
 ];
 
 const fileToBase64 = (file) =>
@@ -185,26 +181,9 @@ export default function App() {
           .filter(Boolean)
           .join(". ");
 
-        setStatusNote("Generating via Puter AI (first run may ask to sign into Puter)...");
-
-        const puterOptions = {
-          model: puterModel,
-        };
-
-        if (transformationType === "aiEdit" && file) {
-          const base64Data = await fileToBase64(file);
-          puterOptions.input_image = base64Data;
-          puterOptions.input_image_mime_type = file.type || "image/png";
-        }
-
-        if (puterOptions?.model === "auto") delete puterOptions.model;
-        const generatedImgEl = await puter.ai.txt2img(fullPrompt, puterOptions);
-        setStatusNote("Saving generated result to Cloudinary & MongoDB...");
-
-        const generatedBlob = await imgElementToBlob(generatedImgEl);
-        formData.append("provider", "puter");
-        formData.append("image", generatedBlob, "puter-generated.png");
-
+        setStatusNote("Generating image via Vision Forge AI...");
+        formData.append("provider", "ai");
+        formData.append("model", puterModel);
         if (file) {
           formData.append("originalImage", file);
         }
@@ -277,7 +256,7 @@ export default function App() {
                   }
                 >
                   {apiStatus === "online"
-                    ? "Puter AI + Cloudinary Studio Ready"
+                    ? "Vision Forge Studio Ready"
                     : "Checking API..."}
                 </span>
               </p>
