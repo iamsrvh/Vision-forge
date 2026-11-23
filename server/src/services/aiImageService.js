@@ -34,13 +34,16 @@ export const uploadBufferToCloudinary = (
     stream.end(buffer);
   });
 
-async function generateServerImageBuffer({ prompt, model }) {
-  if (process.env.GEMINI_API_KEY) {
-    const geminiModel = model?.startsWith("imagen-")
-      ? model
-      : "imagen-3.0-generate-002";
+async function generateWithGemini({ prompt, model }) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  // If the user/UI picked an Imagen model ID, try Imagen 4 predict first; otherwise use Gemini image generation
+  if (model && model.startsWith("imagen-")) {
+    const imagenModel =
+      model === "imagen-3.0-generate-002" ? "imagen-4.0-generate-001" : model;
     const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:predict?key=${process.env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${imagenModel}:predict?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -51,12 +54,47 @@ async function generateServerImageBuffer({ prompt, model }) {
       }
     );
     const data = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data?.error?.message || "Gemini image generation failed.");
+    if (resp.ok && data?.predictions?.[0]?.bytesBase64Encoded) {
+      return Buffer.from(data.predictions[0].bytesBase64Encoded, "base64");
     }
-    const b64 = data?.predictions?.[0]?.bytesBase64Encoded;
-    if (!b64) throw new Error("Gemini returned no image bytes.");
-    return Buffer.from(b64, "base64");
+  }
+
+  const geminiModel =
+    model && model.startsWith("gemini-") && model.includes("image")
+      ? model
+      : "gemini-2.5-flash-image";
+
+  const resp = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseModalities: ["IMAGE"],
+        },
+      }),
+    }
+  );
+
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(data?.error?.message || "Gemini image generation failed.");
+  }
+
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const inlineImagePart = parts.find((part) => part?.inlineData?.data);
+  if (!inlineImagePart?.inlineData?.data) {
+    throw new Error("Gemini returned no image data in response.");
+  }
+
+  return Buffer.from(inlineImagePart.inlineData.data, "base64");
+}
+
+async function generateServerImageBuffer({ prompt, model }) {
+  if (process.env.GEMINI_API_KEY) {
+    return await generateWithGemini({ prompt, model });
   }
 
   const encoded = encodeURIComponent(prompt);
