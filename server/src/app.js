@@ -1,5 +1,5 @@
 import express from "express";
-import cors from "cors";
+
 import { clerkMiddleware } from "@clerk/express";
 import healthRoutes from "./routes/healthRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
@@ -7,9 +7,24 @@ import imageRoutes from "./routes/imageRoutes.js";
 
 const app = express();
 
+import cors from "cors";
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://vision-forge-mu.vercel.app",
+  process.env.CLIENT_URL,
+]
+  .filter(Boolean)
+  .map((url) => url.replace(/\/+$/, ""));
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin.replace(/\/+$/, ""))) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
   })
 );
