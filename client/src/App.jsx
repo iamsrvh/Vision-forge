@@ -5,7 +5,13 @@ import {
   UserButton,
   useAuth,
 } from "@clerk/react";
-import puter from "@heyputer/puter.js";
+import {
+  MotionConfig,
+  motion,
+  useScroll,
+  useTransform,
+  AnimatePresence,
+} from "framer-motion";
 import {
   Sparkles,
   CheckCircle2,
@@ -19,9 +25,11 @@ import {
 import { useApi } from "./lib/useApi";
 import BeforeAfterSlider from "./components/BeforeAfterSlider";
 
+const APPLE_EASE = [0.22, 1, 0.36, 1];
+
 const MODES = [
   { value: "textToImage", label: "Text to Image", needsFile: false },
-  { value: "aiEdit", label: "AI Prompt Edit (Puter AI)", needsFile: true },
+  { value: "aiEdit", label: "AI Prompt Edit", needsFile: true },
   { value: "restore", label: "AI Restore", needsFile: true },
   { value: "removeBackground", label: "Remove Background", needsFile: true },
   { value: "fill", label: "Generative Fill", needsFile: true },
@@ -61,45 +69,35 @@ const STYLE_PRESETS = [
   },
 ];
 
-const PUTER_MODELS = [
+const AI_MODELS = [
   { id: "imagen-3.0-generate-002", label: "Imagen 3 (Studio Fast)" },
   { id: "gemini-2.5-flash-image", label: "Gemini Flash Image" },
 ];
 
-const fileToBase64 = (file) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || "");
-      resolve(result.split(",")[1]);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-
-const imgElementToBlob = async (imgEl) => {
-  const res = await fetch(imgEl.src);
-  return await res.blob();
-};
+const ASPECT_RATIOS = ["1:1", "4:3", "16:9", "3:4", "9:16"];
 
 export default function App() {
-  const { isLoaded, isSignedIn } = useAuth();
+  const { isSignedIn, isLoaded } = useAuth();
   const api = useApi();
 
-  const [apiStatus, setApiStatus] = useState("checking");
+  const { scrollY } = useScroll();
+  const heroGlowY = useTransform(scrollY, [0, 500], [0, -70]);
+  const heroGlowOpacity = useTransform(scrollY, [0, 450], [0.42, 0.14]);
+
   const [profile, setProfile] = useState(null);
   const [images, setImages] = useState([]);
+  const [latestResult, setLatestResult] = useState(null);
+  const [loadingData, setLoadingData] = useState(false);
 
   const [title, setTitle] = useState("");
   const [transformationType, setTransformationType] = useState("textToImage");
-  const [puterModel, setPuterModel] = useState(PUTER_MODELS[0].id);
   const [stylePreset, setStylePreset] = useState("cinematic-dark");
   const [prompt, setPrompt] = useState("");
+  const [aiModel, setAiModel] = useState(AI_MODELS[0].id);
   const [color, setColor] = useState("#6366f1");
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState("");
-  const [latestResult, setLatestResult] = useState(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [statusNote, setStatusNote] = useState("");
@@ -107,61 +105,62 @@ export default function App() {
 
   const currentMode =
     MODES.find((m) => m.value === transformationType) || MODES[0];
-  const isPuterMode =
+  const isAiGenerationMode =
     transformationType === "textToImage" || transformationType === "aiEdit";
 
-  useEffect(() => {
-    api
-      .get("/health")
-      .then((res) => {
-        if (res.data?.success) setApiStatus("online");
-      })
-      .catch(() => setApiStatus("offline"));
-  }, [api]);
-
-  const loadAccountData = useCallback(async () => {
+  const loadWorkspace = useCallback(async () => {
+    if (!isSignedIn) return;
+    setLoadingData(true);
+    setErrorMsg("");
     try {
-      const [meRes, imgsRes] = await Promise.all([
-        api.get("/users/me"),
+      const [meRes, listRes] = await Promise.all([
+        api.get("/me"),
         api.get("/images"),
       ]);
       setProfile(meRes.data.user);
-      setImages(imgsRes.data.images || []);
+      setImages(listRes.data.images || []);
     } catch (err) {
-      console.error("Failed to load account data:", err);
+      console.error("Workspace load error:", err);
+      setErrorMsg(
+        err.response?.data?.message ||
+          "Could not load workspace data from server."
+      );
+    } finally {
+      setLoadingData(false);
     }
-  }, [api]);
+  }, [isSignedIn, api]);
 
   useEffect(() => {
-    if (!isSignedIn) {
-      setProfile(null);
-      setImages([]);
-      setLatestResult(null);
+    if (isLoaded && isSignedIn) {
+      loadWorkspace();
+    }
+  }, [isLoaded, isSignedIn, loadWorkspace]);
+
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl("");
       return;
     }
-    loadAccountData();
-  }, [isSignedIn, loadAccountData]);
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
 
   const handleFileChange = (e) => {
     const selected = e.target.files?.[0];
-    if (!selected) return;
-    setFile(selected);
-    setPreviewUrl(URL.createObjectURL(selected));
-    setErrorMsg("");
+    setFile(selected || null);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg("");
-    setStatusNote("");
 
-    if (currentMode.needsFile && !file) {
-      setErrorMsg("Please upload a source image first.");
+    if (!isAiGenerationMode && !file) {
+      setErrorMsg("Please upload a source image for this transformation.");
       return;
     }
-
     if (transformationType === "textToImage" && !prompt.trim()) {
-      setErrorMsg("Please enter a prompt describing the image to generate.");
+      setErrorMsg("Please enter a prompt for Text to Image.");
       return;
     }
 
@@ -175,19 +174,23 @@ export default function App() {
       formData.append("color", color);
       formData.append("aspectRatio", aspectRatio);
 
-      if (isPuterMode) {
+      if (isAiGenerationMode) {
         const presetObj = STYLE_PRESETS.find((p) => p.id === stylePreset);
         const fullPrompt = [prompt.trim(), presetObj?.suffix]
           .filter(Boolean)
           .join(". ");
 
-        setStatusNote("Generating image via Vision Forge AI...");
+        setStatusNote("Generating image via Vision Forge Studio...");
         formData.append("provider", "ai");
-        formData.append("model", puterModel);
+        formData.append("model", aiModel);
+        if (fullPrompt) {
+          formData.set("prompt", fullPrompt);
+        }
         if (file) {
           formData.append("originalImage", file);
         }
       } else {
+        setStatusNote("Processing transformation on server...");
         formData.append("provider", "cloudinary");
         formData.append("image", file);
       }
@@ -225,366 +228,526 @@ export default function App() {
       if (latestResult?._id === id) setLatestResult(null);
     } catch (err) {
       console.error("Delete error:", err);
+      setErrorMsg("Failed to delete image.");
     }
   };
 
-  if (!isLoaded) {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-zinc-950 text-zinc-400 text-sm">
-        Loading authentication...
-      </main>
-    );
-  }
-
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100 px-6 py-8">
-      <div className="max-w-6xl mx-auto space-y-8">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-800 pb-5">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/15 text-indigo-400 border border-indigo-500/30">
-              <Sparkles className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold tracking-tight">
-                Vision Forge
-              </h1>
-              <p className="text-xs text-zinc-400 flex items-center gap-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                <span
-                  className={
-                    apiStatus === "online" ? "text-emerald-400" : "text-zinc-400"
-                  }
-                >
-                  {apiStatus === "online"
-                    ? "Vision Forge Studio Ready"
-                    : "Checking API..."}
-                </span>
-              </p>
-            </div>
-          </div>
+    <MotionConfig reducedMotion="user">
+      <div className="relative min-h-screen overflow-x-clip bg-[#07080a] text-[#f4f6fa]">
+        {/* Ambient Apple-style radial spotlight with scroll depth */}
+        <motion.div
+          aria-hidden="true"
+          style={{ y: heroGlowY, opacity: heroGlowOpacity }}
+          className="pointer-events-none fixed inset-x-0 -top-36 z-0 mx-auto h-[420px] w-[820px] rounded-full bg-indigo-500/20 blur-[135px]"
+        />
 
-          {!isSignedIn ? (
+        <div className="relative z-10 mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+          {/* Top Navigation Bar */}
+          <motion.header
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease: APPLE_EASE }}
+            className="apple-glass apple-hairline mb-8 flex flex-wrap items-center justify-between gap-4 rounded-2xl px-5 py-4 shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
+          >
             <div className="flex items-center gap-3">
-              <SignInButton mode="modal">
-                <button className="px-4 py-2 rounded-lg border border-zinc-700 hover:bg-zinc-800 text-sm font-medium cursor-pointer">
-                  Sign In
-                </button>
-              </SignInButton>
-              <SignUpButton mode="modal">
-                <button className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium text-white cursor-pointer">
-                  Sign Up (10 Free Credits)
-                </button>
-              </SignUpButton>
-            </div>
-          ) : (
-            <div className="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/70 px-4 py-2">
-              <div className="text-right">
-                <p className="text-xs text-zinc-400">{profile?.email}</p>
-                <p className="text-sm font-semibold text-amber-400 flex items-center justify-end gap-1">
-                  <Coins className="h-4 w-4" />
-                  {profile ? `${profile.creditBalance} Credits` : "Syncing..."}
+              <motion.div
+                whileHover={{ rotate: 8, scale: 1.04 }}
+                transition={{ duration: 0.25, ease: APPLE_EASE }}
+                className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/15 ring-1 ring-indigo-400/30"
+              >
+                <Sparkles className="h-5 w-5 text-indigo-400" />
+              </motion.div>
+              <div>
+                <h1 className="text-lg font-semibold tracking-tight text-white">
+                  Vision Forge
+                </h1>
+                <p className="flex items-center gap-1.5 text-xs text-zinc-400">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                  Vision Forge Studio Ready
                 </p>
               </div>
-              <UserButton />
             </div>
-          )}
-        </header>
 
-        {!isSignedIn ? (
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-12 text-center space-y-3">
-            <h2 className="text-lg font-medium">
-              Sign in to create and transform visuals
-            </h2>
-            <p className="text-sm text-zinc-400 max-w-md mx-auto">
-              Generate images with FLUX, GPT Image, and Nano Banana via Puter
-              AI, compare before & after, and save every creation to your
-              gallery.
-            </p>
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Left: Controls */}
-              <form
-                onSubmit={handleSubmit}
-                className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 space-y-5"
-              >
-                <h2 className="text-base font-semibold flex items-center gap-2">
-                  <Wand2 className="h-4 w-4 text-indigo-400" />
-                  Creative Studio (1 Credit)
-                </h2>
-
-                <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                    Title
-                  </label>
-                  <input
-                    type="text"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="e.g., Night Concrete Workspace"
-                    className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                      Studio Mode
-                    </label>
-                    <select
-                      value={transformationType}
-                      onChange={(e) => setTransformationType(e.target.value)}
-                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-sm focus:outline-none focus:border-indigo-500"
+            <div className="flex items-center gap-3">
+              {!isLoaded ? (
+                <div className="h-8 w-24 animate-pulse rounded-full bg-zinc-800/80" />
+              ) : isSignedIn ? (
+                <>
+                  {profile?.email && (
+                    <span className="hidden text-xs text-zinc-400 sm:inline">
+                      {profile.email}
+                    </span>
+                  )}
+                  <motion.div
+                    key={profile?.creditBalance ?? "credits"}
+                    initial={{ scale: 0.94, opacity: 0.7 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    transition={{ duration: 0.28, ease: APPLE_EASE }}
+                    className="flex items-center gap-1.5 rounded-full border border-indigo-400/25 bg-indigo-500/10 px-3.5 py-1.5 text-xs font-medium text-indigo-200"
+                  >
+                    <Coins className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>
+                      {loadingData
+                        ? "Loading..."
+                        : `${profile?.creditBalance ?? 0} Credits`}
+                    </span>
+                  </motion.div>
+                  <UserButton afterSignOutUrl="/" />
+                </>
+              ) : (
+                <div className="flex items-center gap-2.5">
+                  <SignInButton mode="modal">
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      transition={{ duration: 0.16, ease: APPLE_EASE }}
+                      className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-medium text-white transition hover:bg-white/10"
                     >
-                      {MODES.map((m) => (
-                        <option key={m.value} value={m.value}>
-                          {m.label}
-                        </option>
-                      ))}
-                    </select>
+                      Sign In
+                    </motion.button>
+                  </SignInButton>
+                  <SignUpButton mode="modal">
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      transition={{ duration: 0.16, ease: APPLE_EASE }}
+                      className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-medium text-white shadow-lg shadow-indigo-600/25 transition hover:bg-indigo-500"
+                    >
+                      Get Started
+                    </motion.button>
+                  </SignUpButton>
+                </div>
+              )}
+            </div>
+          </motion.header>
+
+          {!isSignedIn && isLoaded ? (
+            <motion.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.55, ease: APPLE_EASE }}
+              className="apple-glass apple-hairline mx-auto max-w-xl rounded-3xl p-10 text-center shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+            >
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-500/15 ring-1 ring-indigo-400/30">
+                <Sparkles className="h-6 w-6 text-indigo-400" />
+              </div>
+              <h2 className="text-2xl font-semibold tracking-tight text-white">
+                Craft studio visuals with fluid precision
+              </h2>
+              <p className="mt-2.5 text-sm leading-relaxed text-zinc-400">
+                Sign in once to generate images, apply editorial style presets,
+                compare before-and-after results, and manage your saved studio
+                creations.
+              </p>
+              <div className="mt-6 flex justify-center gap-3">
+                <SignInButton mode="modal">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={{ duration: 0.16, ease: APPLE_EASE }}
+                    className="rounded-full bg-indigo-600 px-6 py-2.5 text-sm font-medium text-white shadow-lg shadow-indigo-600/25 transition hover:bg-indigo-500"
+                  >
+                    Sign In to Studio
+                  </motion.button>
+                </SignInButton>
+              </div>
+            </motion.div>
+          ) : (
+            <div className="space-y-8">
+              {/* Main Studio Split */}
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                {/* Left: Controls */}
+                <motion.form
+                  onSubmit={handleSubmit}
+                  initial={{ opacity: 0, y: 18 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.55, delay: 0.06, ease: APPLE_EASE }}
+                  className="apple-glass apple-hairline space-y-5 rounded-3xl p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+                >
+                  <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight text-white">
+                    <Wand2 className="h-4 w-4 text-indigo-400" />
+                    Creative Studio (1 Credit)
+                  </h2>
+
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                      Title
+                    </label>
+                    <input
+                      type="text"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      placeholder="e.g., Night Concrete Workspace"
+                      className="w-full rounded-xl border border-white/10 bg-zinc-950/70 px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 transition focus:border-indigo-400/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
                   </div>
 
-                  {isPuterMode ? (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div>
-                      <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                        AI Model
+                      <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                        Studio Mode
                       </label>
                       <select
-                        value={puterModel}
-                        onChange={(e) => setPuterModel(e.target.value)}
-                        className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-sm focus:outline-none focus:border-indigo-500"
+                        value={transformationType}
+                        onChange={(e) => setTransformationType(e.target.value)}
+                        className="w-full rounded-xl border border-white/10 bg-zinc-950/70 px-3.5 py-2.5 text-sm text-white transition focus:border-indigo-400/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                       >
-                        {PUTER_MODELS.map((m) => (
-                          <option key={m.id} value={m.id}>
+                        {MODES.map((m) => (
+                          <option
+                            key={m.value}
+                            value={m.value}
+                            className="bg-zinc-900"
+                          >
                             {m.label}
                           </option>
                         ))}
                       </select>
                     </div>
-                  ) : (
+
                     <div>
-                      <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                        Aspect Ratio
+                      <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                        AI Model
                       </label>
                       <select
-                        value={aspectRatio}
-                        onChange={(e) => setAspectRatio(e.target.value)}
-                        className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-sm focus:outline-none focus:border-indigo-500"
+                        value={aiModel}
+                        onChange={(e) => setAiModel(e.target.value)}
+                        className="w-full rounded-xl border border-white/10 bg-zinc-950/70 px-3.5 py-2.5 text-sm text-white transition focus:border-indigo-400/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                       >
-                        <option value="1:1">1:1 (Square)</option>
-                        <option value="16:9">16:9 (Widescreen)</option>
-                        <option value="4:3">4:3 (Classic)</option>
+                        {AI_MODELS.map((m) => (
+                          <option
+                            key={m.id}
+                            value={m.id}
+                            className="bg-zinc-900"
+                          >
+                            {m.label}
+                          </option>
+                        ))}
                       </select>
                     </div>
-                  )}
-                </div>
-
-                {/* Style Presets */}
-                <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-2">
-                    Style Preset
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {STYLE_PRESETS.map((preset) => {
-                      const active = stylePreset === preset.id;
-                      return (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          onClick={() => setStylePreset(preset.id)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer transition ${
-                            active
-                              ? "bg-indigo-600/25 border-indigo-500 text-indigo-200"
-                              : "bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200"
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      );
-                    })}
                   </div>
-                </div>
 
-                {/* Prompt Input */}
-                <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                    Prompt / Edit Instruction
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder={
-                      transformationType === "textToImage"
-                        ? "Minimalist modern workspace at night with warm desk lamp glow and architectural concrete walls..."
-                        : "Describe what to change, restyle, or transform..."
-                    }
-                    className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-
-                {transformationType === "recolor" && (
+                  {/* Apple-style segmented style preset selector */}
                   <div>
-                    <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                      Target Color
+                    <label className="mb-2 block text-xs font-medium text-zinc-400">
+                      Style Preset
                     </label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="color"
-                        value={color}
-                        onChange={(e) => setColor(e.target.value)}
-                        className="h-9 w-14 rounded cursor-pointer bg-transparent border border-zinc-800"
-                      />
-                      <span className="text-xs text-zinc-400">{color}</span>
+                    <div className="flex flex-wrap gap-1.5 rounded-2xl border border-white/8 bg-zinc-950/60 p-1.5">
+                      {STYLE_PRESETS.map((preset) => {
+                        const active = stylePreset === preset.id;
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => setStylePreset(preset.id)}
+                            className={`relative rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                              active ? "text-white" : "text-zinc-400 hover:text-zinc-200"
+                            }`}
+                          >
+                            {active && (
+                              <motion.span
+                                layoutId="activeStylePresetPill"
+                                transition={{
+                                  type: "spring",
+                                  stiffness: 420,
+                                  damping: 34,
+                                }}
+                                className="absolute inset-0 rounded-xl bg-indigo-600/90 shadow-sm"
+                              />
+                            )}
+                            <span className="relative z-10">{preset.label}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
-                )}
 
-                {currentMode.needsFile && (
                   <div>
-                    <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                      Source Image (Max 15MB)
+                    <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                      Prompt / Edit Instruction
                     </label>
-                    <label className="flex flex-col items-center justify-center rounded-xl border border-dashed border-zinc-700 hover:border-indigo-500 bg-zinc-950/70 p-5 cursor-pointer transition">
-                      <Upload className="h-5 w-5 text-zinc-400 mb-1.5" />
-                      <span className="text-xs text-zinc-300">
-                        {file ? file.name : "Click to upload source image"}
-                      </span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={handleFileChange}
-                        className="hidden"
-                      />
-                    </label>
+                    <textarea
+                      rows={3}
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      placeholder="Minimalist modern workspace at night with warm desk lamp glow and architectural concrete walls..."
+                      className="w-full rounded-xl border border-white/10 bg-zinc-950/70 px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 transition focus:border-indigo-400/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
                   </div>
-                )}
 
-                {statusNote && (
-                  <p className="text-xs text-indigo-300 bg-indigo-500/10 border border-indigo-500/30 rounded-lg px-3 py-2">
-                    {statusNote}
-                  </p>
-                )}
+                  {transformationType === "fill" && (
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                        Aspect Ratio
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        {ASPECT_RATIOS.map((ratio) => (
+                          <button
+                            key={ratio}
+                            type="button"
+                            onClick={() => setAspectRatio(ratio)}
+                            className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                              aspectRatio === ratio
+                                ? "bg-indigo-600 text-white"
+                                : "border border-white/10 bg-zinc-900/70 text-zinc-300 hover:bg-zinc-800"
+                            }`}
+                          >
+                            {ratio}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-                {errorMsg && (
-                  <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2">
-                    {errorMsg}
-                  </p>
-                )}
+                  {transformationType === "recolor" && (
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                        Target Color
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="color"
+                          value={color}
+                          onChange={(e) => setColor(e.target.value)}
+                          className="h-9 w-12 cursor-pointer rounded-lg border border-white/10 bg-transparent"
+                        />
+                        <span className="text-xs text-zinc-300">{color}</span>
+                      </div>
+                    </div>
+                  )}
 
-                <button
-                  type="submit"
-                  disabled={submitting || (profile?.creditBalance ?? 0) < 1}
-                  className="w-full py-2.5 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-sm font-medium text-white cursor-pointer transition"
+                  {currentMode.needsFile && (
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                        Source Image
+                      </label>
+                      <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-zinc-950/50 px-4 py-5 text-center transition hover:border-indigo-400/50 hover:bg-zinc-900/50">
+                        <Upload className="mb-1.5 h-5 w-5 text-zinc-400" />
+                        <span className="text-xs font-medium text-zinc-300">
+                          {file ? file.name : "Choose an image file"}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleFileChange}
+                          className="hidden"
+                        />
+                      </label>
+                      {previewUrl && (
+                        <motion.img
+                          initial={{ opacity: 0, y: 6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.3, ease: APPLE_EASE }}
+                          src={previewUrl}
+                          alt="Source preview"
+                          className="mt-3 max-h-40 rounded-xl border border-white/10 object-cover"
+                        />
+                      )}
+                    </div>
+                  )}
+
+                  <AnimatePresence mode="wait">
+                    {statusNote && (
+                      <motion.div
+                        key="status-note"
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={{ duration: 0.25, ease: APPLE_EASE }}
+                        className="rounded-xl border border-indigo-400/25 bg-indigo-500/10 px-3.5 py-2.5 text-xs text-indigo-200"
+                      >
+                        {statusNote}
+                      </motion.div>
+                    )}
+
+                    {errorMsg && (
+                      <motion.div
+                        key="error-msg"
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={{ duration: 0.25, ease: APPLE_EASE }}
+                        className="rounded-xl border border-rose-500/30 bg-rose-950/50 px-3.5 py-2.5 text-xs text-rose-200"
+                      >
+                        {errorMsg}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <motion.button
+                    type="submit"
+                    disabled={submitting}
+                    whileHover={{ scale: submitting ? 1 : 1.012 }}
+                    whileTap={{ scale: submitting ? 1 : 0.98 }}
+                    transition={{ duration: 0.18, ease: APPLE_EASE }}
+                    className="w-full rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_12px_32px_rgba(79,70,229,0.38)] transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {submitting
+                      ? "Generating..."
+                      : `Run ${currentMode.label} (-1 Credit)`}
+                  </motion.button>
+                </motion.form>
+
+                {/* Right: Before / After Canvas */}
+                <motion.section
+                  initial={{ opacity: 0, y: 18 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.55, delay: 0.12, ease: APPLE_EASE }}
+                  className="apple-glass apple-hairline flex flex-col rounded-3xl p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
                 >
-                  {submitting
-                    ? "Generating..."
-                    : `Run ${currentMode.label} (-1 Credit)`}
-                </button>
-              </form>
+                  <div className="mb-4 flex items-center justify-between">
+                    <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight text-white">
+                      <ImageIcon className="h-4 w-4 text-indigo-400" />
+                      Before / After Canvas
+                    </h2>
+                    {latestResult?.transformedUrl && (
+                      <a
+                        href={latestResult.transformedUrl}
+                        download={`${latestResult.title || "vision-forge"}.png`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-zinc-200 transition hover:bg-white/10"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Download
+                      </a>
+                    )}
+                  </div>
 
-              {/* Right: Interactive Before / After Preview */}
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 flex flex-col justify-between space-y-4">
-                <h2 className="text-base font-semibold flex items-center gap-2">
-                  <ImageIcon className="h-4 w-4 text-emerald-400" />
-                  Before / After Canvas
+                  <div className="flex min-h-[380px] flex-1 items-center justify-center rounded-2xl border border-white/8 bg-zinc-950/60 p-4">
+                    <AnimatePresence mode="wait">
+                      {submitting ? (
+                        <motion.div
+                          key="generating-state"
+                          initial={{ opacity: 0, scale: 0.97 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.97 }}
+                          transition={{ duration: 0.35, ease: APPLE_EASE }}
+                          className="flex flex-col items-center gap-3 text-center"
+                        >
+                          <div className="h-10 w-10 animate-spin rounded-full border-2 border-indigo-400/30 border-t-indigo-400" />
+                          <p className="text-xs text-zinc-400">
+                            {statusNote || "Rendering your creation..."}
+                          </p>
+                        </motion.div>
+                      ) : latestResult?.transformedUrl ? (
+                        <motion.div
+                          key={latestResult._id || latestResult.transformedUrl}
+                          initial={{ opacity: 0, scale: 0.98 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.98 }}
+                          transition={{ duration: 0.45, ease: APPLE_EASE }}
+                          className="w-full space-y-3"
+                        >
+                          {latestResult.originalUrl ? (
+                            <BeforeAfterSlider
+                              beforeUrl={latestResult.originalUrl}
+                              afterUrl={latestResult.transformedUrl}
+                            />
+                          ) : (
+                            <img
+                              src={latestResult.transformedUrl}
+                              alt={latestResult.title || "Generated result"}
+                              className="max-h-[420px] w-full rounded-xl object-contain"
+                            />
+                          )}
+                          <div className="flex items-center justify-between pt-1 text-xs text-zinc-400">
+                            <span className="font-medium text-zinc-200">
+                              {latestResult.title}
+                            </span>
+                            <span>{latestResult.transformationType}</span>
+                          </div>
+                        </motion.div>
+                      ) : (
+                        <motion.p
+                          key="empty-canvas"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.3, ease: APPLE_EASE }}
+                          className="max-w-xs text-center text-xs leading-relaxed text-zinc-500"
+                        >
+                          Choose a model and preset, enter your prompt, and run
+                          a generation or edit.
+                        </motion.p>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </motion.section>
+              </div>
+
+              {/* Saved Creations Gallery */}
+              <motion.section
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, amount: "some" }}
+                transition={{ duration: 0.55, ease: APPLE_EASE }}
+                className="space-y-4"
+              >
+                <h2 className="text-base font-semibold tracking-tight text-white">
+                  Saved Creations ({images.length})
                 </h2>
 
-                <div className="flex-1 min-h-[320px] rounded-xl border border-zinc-800 bg-zinc-950 flex items-center justify-center overflow-hidden p-3">
-                  {latestResult ? (
-                    <BeforeAfterSlider
-                      beforeUrl={latestResult.originalUrl}
-                      afterUrl={latestResult.transformedUrl}
-                      alt={latestResult.title}
-                    />
-                  ) : previewUrl ? (
-                    <img
-                      src={previewUrl}
-                      alt="Selected preview"
-                      className="max-h-[360px] w-auto rounded-lg object-contain opacity-85"
-                    />
-                  ) : (
-                    <p className="text-xs text-zinc-500 text-center max-w-xs">
-                      Choose a model and preset, enter your prompt, and run a
-                      generation or edit.
-                    </p>
-                  )}
-                </div>
-
-                {latestResult && (
-                  <div className="flex items-center justify-between gap-2 pt-1">
-                    <span className="text-xs text-zinc-400 truncate">
-                      {latestResult.title} • {latestResult.stylePreset}
-                    </span>
-                    <a
-                      href={latestResult.transformedUrl}
-                      download={`${latestResult.title}.png`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium shrink-0"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      Download
-                    </a>
+                {images.length === 0 ? (
+                  <div className="apple-glass apple-hairline rounded-2xl p-8 text-center text-xs text-zinc-500">
+                    No creations saved yet. Run your first generation above.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                    {images.map((item, idx) => (
+                      <motion.article
+                        key={item._id}
+                        initial={{ opacity: 0, y: 16 }}
+                        whileInView={{ opacity: 1, y: 0 }}
+                        viewport={{ once: true, amount: "some" }}
+                        transition={{
+                          duration: 0.45,
+                          delay: Math.min(idx * 0.05, 0.25),
+                          ease: APPLE_EASE,
+                        }}
+                        whileHover={{ y: -4 }}
+                        onClick={() => setLatestResult(item)}
+                        className="apple-glass apple-hairline group cursor-pointer overflow-hidden rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.35)] transition hover:border-white/20"
+                      >
+                        <div className="relative aspect-[4/3] overflow-hidden bg-zinc-950">
+                          <img
+                            src={item.transformedUrl || item.originalUrl}
+                            alt={item.title || "Saved creation"}
+                            loading="lazy"
+                            className="h-full w-full object-cover transition duration-500 ease-out group-hover:scale-[1.04]"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-2 p-4">
+                          <div className="min-w-0">
+                            <h3 className="truncate text-sm font-medium text-white">
+                              {item.title || "Untitled"}
+                            </h3>
+                            <p className="text-xs text-zinc-400">
+                              {item.transformationType || "textToImage"}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDelete(item._id);
+                            }}
+                            aria-label="Delete creation"
+                            className="rounded-lg p-2 text-zinc-400 transition hover:bg-rose-500/15 hover:text-rose-300"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </motion.article>
+                    ))}
                   </div>
                 )}
-              </div>
+              </motion.section>
             </div>
-
-            {/* Saved Gallery */}
-            <section className="space-y-4">
-              <h2 className="text-base font-semibold">
-                Saved Creations ({images.length})
-              </h2>
-
-              {images.length === 0 ? (
-                <p className="text-sm text-zinc-500">
-                  No creations yet. Run your first prompt above.
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-5">
-                  {images.map((img) => (
-                    <div
-                      key={img._id}
-                      onClick={() => setLatestResult(img)}
-                      className="rounded-xl border border-zinc-800 bg-zinc-900/60 overflow-hidden flex flex-col cursor-pointer hover:border-zinc-700 transition"
-                    >
-                      <div className="h-48 bg-zinc-950 flex items-center justify-center overflow-hidden">
-                        <img
-                          src={img.transformedUrl}
-                          alt={img.title}
-                          className="h-full w-full object-cover"
-                        />
-                      </div>
-                      <div className="p-4 flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">
-                            {img.title}
-                          </p>
-                          <p className="text-xs text-zinc-400">
-                            {img.transformationType} • {img.stylePreset}
-                          </p>
-                        </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDelete(img._id);
-                          }}
-                          className="p-2 rounded-lg bg-zinc-800 hover:bg-rose-500/20 text-zinc-300 hover:text-rose-400 cursor-pointer shrink-0"
-                          title="Delete creation"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          </>
-        )}
+          )}
+        </div>
       </div>
-    </main>
+    </MotionConfig>
   );
 }
+EOF
