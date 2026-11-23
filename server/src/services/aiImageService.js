@@ -1,4 +1,4 @@
-import cloudinary, { buildTransformedUrl } from "../config/cloudinary.js";
+import cloudinary, { buildTransformedUrl, ensureCloudinaryConfigured } from "../config/cloudinary.js";
 
 const STYLE_PROMPTS = {
   "cinematic-dark":
@@ -24,6 +24,11 @@ export const uploadBufferToCloudinary = (
   folder = "vision-forge/results"
 ) =>
   new Promise((resolve, reject) => {
+    try {
+      ensureCloudinaryConfigured();
+    } catch (cfgErr) {
+      return reject(cfgErr);
+    }
     const stream = cloudinary.uploader.upload_stream(
       { folder, resource_type: "image" },
       (error, result) => {
