@@ -62,9 +62,12 @@ const STYLE_PRESETS = [
 ];
 
 const PUTER_MODELS = [
-  { id: "black-forest-labs/FLUX.1-schnell", label: "FLUX.1 Schnell (Fast)" },
-  { id: "gpt-image-1", label: "GPT Image 1" },
-  { id: "gemini-2.5-flash-image-preview", label: "Nano Banana" },
+  { id: "auto", label: "Auto (Puter Default)" },
+  { id: "black-forest-labs/flux-2-pro", label: "FLUX.2 [pro]" },
+  { id: "black-forest-labs/flux-1.1-pro", label: "FLUX 1.1 Pro" },
+  { id: "openai/gpt-image-2.6-flare", label: "GPT Image 2.6 Flare" },
+  { id: "google/gemini-3-pro-image", label: "Nano Banana Pro (Gemini 3 Pro Image)" },
+  { id: "x-ai/grok-imagine-image-2.0", label: "Grok Imagine Image 2.0" },
 ];
 
 const fileToBase64 = (file) =>
@@ -194,6 +197,7 @@ export default function App() {
           puterOptions.input_image_mime_type = file.type || "image/png";
         }
 
+        if (puterOptions?.model === "auto") delete puterOptions.model;
         const generatedImgEl = await puter.ai.txt2img(fullPrompt, puterOptions);
         setStatusNote("Saving generated result to Cloudinary & MongoDB...");
 
