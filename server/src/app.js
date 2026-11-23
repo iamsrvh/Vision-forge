@@ -27,4 +27,8 @@ app.use((err, req, res, next) => {
     .json({ success: false, message: err.message || "Server Error" });
 });
 
+app.get("/", (req, res) => {
+  res.status(200).json({ success: true, message: "Vision Forge API is running", health: "/api/health" });
+});
+
 export default app;
