@@ -750,4 +750,3 @@ export default function App() {
     </MotionConfig>
   );
 }
-EOF
