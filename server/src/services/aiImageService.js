@@ -76,21 +76,59 @@ async function generateWithGemini({ prompt, model }) {
   return Buffer.from(inlineImagePart.inlineData.data, "base64");
 }
 
+async function generateWithHuggingFace({ prompt }) {
+  const hfToken = process.env.HF_TOKEN || process.env.HUGGINGFACE_API_KEY;
+  if (!hfToken) return null;
+
+  const resp = await fetch(
+    "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${hfToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ inputs: prompt }),
+    }
+  );
+
+  if (!resp.ok) {
+    throw new Error(`Hugging Face returned HTTP ${resp.status}`);
+  }
+
+  const arrayBuffer = await resp.arrayBuffer();
+  const buf = Buffer.from(arrayBuffer);
+  if (buf.length === 0) {
+    throw new Error("Hugging Face returned an empty buffer.");
+  }
+  return buf;
+}
+
 async function generateWithFallback({ prompt }) {
   const encoded = encodeURIComponent(prompt);
   const seed = Math.floor(Math.random() * 1000000);
 
   const endpoints = [
-    `https://gen.pollinations.ai/image/${encoded}?width=1024&height=1024&seed=${seed}&nologo=true`,
-    `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&seed=${seed}&nologo=true`,
+    `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&seed=${seed}&model=flux&nologo=true`,
+    `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&seed=${seed}&model=turbo&nologo=true`,
   ];
 
   let lastError = null;
   for (const url of endpoints) {
     try {
-      const resp = await fetch(url);
+      const resp = await fetch(url, {
+        headers: {
+          "User-Agent": "VisionForgeStudio/1.0",
+          Accept: "image/*,*/*;q=0.8",
+        },
+      });
       if (!resp.ok) {
         lastError = new Error(`Fallback generator returned HTTP ${resp.status}`);
+        continue;
+      }
+      const contentType = resp.headers.get("content-type") || "";
+      if (!contentType.startsWith("image/")) {
+        lastError = new Error(`Fallback generator returned non-image response (${contentType})`);
         continue;
       }
       const arrayBuffer = await resp.arrayBuffer();
@@ -101,19 +139,36 @@ async function generateWithFallback({ prompt }) {
     }
   }
 
-  throw lastError || new Error("Image generator is temporarily busy. Please try again.");
+  throw (
+    lastError ||
+    new Error(
+      "Upstream free image generator is currently rate-limited (HTTP 402/429). Add a valid GEMINI_API_KEY or HF_TOKEN in Render Environment Variables for dedicated generation."
+    )
+  );
 }
 
 async function generateServerImageBuffer({ prompt, model }) {
   if (process.env.GEMINI_API_KEY) {
     try {
-      return await generateWithGemini({ prompt, model });
+      const buf = await generateWithGemini({ prompt, model });
+      if (buf) return buf;
     } catch (geminiErr) {
       console.warn(
-        "Gemini image generation unavailable/quota-limited, falling back to server image generator:",
+        "Gemini image generation unavailable/quota-limited, trying next provider:",
         geminiErr.message
       );
-      return await generateWithFallback({ prompt });
+    }
+  }
+
+  if (process.env.HF_TOKEN || process.env.HUGGINGFACE_API_KEY) {
+    try {
+      const buf = await generateWithHuggingFace({ prompt });
+      if (buf) return buf;
+    } catch (hfErr) {
+      console.warn(
+        "Hugging Face image generation failed, falling back to public generator:",
+        hfErr.message
+      );
     }
   }
 
