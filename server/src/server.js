@@ -9,6 +9,3 @@ connectDB().then(() => {
     console.log(`Vision Forge server running on http://0.0.0.0:${PORT}`);
   });
 });
-app.get(["/", "/api"], (req, res) => {
-  res.status(200).json({ status: "ok", service: "Vision Forge API" });
-});

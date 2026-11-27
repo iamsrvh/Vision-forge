@@ -1,13 +1,13 @@
 import express from "express";
-
+import cors from "cors";
 import { clerkMiddleware } from "@clerk/express";
 import healthRoutes from "./routes/healthRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import imageRoutes from "./routes/imageRoutes.js";
+import { protectRoute } from "./middleware/authMiddleware.js";
+import { getCurrentUser } from "./controllers/userController.js";
 
 const app = express();
-
-import cors from "cors";
 
 const allowedOrigins = [
   "http://localhost:5173",
@@ -31,7 +31,17 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(clerkMiddleware());
 
+app.get(["/", "/api"], (req, res) => {
+  res.status(200).json({
+    success: true,
+    status: "ok",
+    service: "Vision Forge API",
+    health: "/api/health",
+  });
+});
+
 app.use("/api/health", healthRoutes);
+app.get("/api/me", protectRoute, getCurrentUser);
 app.use("/api/users", userRoutes);
 app.use("/api/images", imageRoutes);
 
@@ -40,10 +50,6 @@ app.use((err, req, res, next) => {
   res
     .status(500)
     .json({ success: false, message: err.message || "Server Error" });
-});
-
-app.get("/", (req, res) => {
-  res.status(200).json({ success: true, message: "Vision Forge API is running", health: "/api/health" });
 });
 
 export default app;
