@@ -1,3 +1,4 @@
+import FeedbackForm from "./components/FeedbackForm";
 import { useEffect, useState, useCallback } from "react";
 import {
   SignInButton,
@@ -743,6 +744,7 @@ export default function App() {
                   </div>
                 )}
               </motion.section>
+              <FeedbackForm api={api} />
             </div>
           )}
         </div>

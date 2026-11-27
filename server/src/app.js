@@ -4,6 +4,7 @@ import { clerkMiddleware } from "@clerk/express";
 import healthRoutes from "./routes/healthRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import imageRoutes from "./routes/imageRoutes.js";
+import feedbackRoutes from "./routes/feedbackRoutes.js";
 import { protectRoute } from "./middleware/authMiddleware.js";
 import { getCurrentUser } from "./controllers/userController.js";
 
@@ -44,6 +45,7 @@ app.use("/api/health", healthRoutes);
 app.get("/api/me", protectRoute, getCurrentUser);
 app.use("/api/users", userRoutes);
 app.use("/api/images", imageRoutes);
+app.use("/api/feedback", feedbackRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err.stack);
