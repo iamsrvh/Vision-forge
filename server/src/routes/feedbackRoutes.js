@@ -4,6 +4,20 @@ import Feedback from "../models/Feedback.js";
 
 const router = express.Router();
 
+// Get all feedback (newest first)
+router.get("/", protectRoute, async (req, res) => {
+  try {
+    const items = await Feedback.find()
+      .populate("user", "email firstName lastName")
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({ success: true, count: items.length, feedback: items });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Submit new feedback
 router.post("/", protectRoute, async (req, res) => {
   try {
     const { rating, category = "generation", message = "" } = req.body;
